@@ -6,13 +6,16 @@ import re
 import tempfile
 import streamlit as st
 import shutil # Added for checking system dependencies
+import sys # To check module import status
 
 # This import is wrapped in a try/except block to provide a cleaner error
 # if ffmpeg is missing, which is handled by a check in main().
+MOVIEPY_AVAILABLE = False
 try:
     from moviepy.editor import VideoFileClip, concatenate_videoclips
+    MOVIEPY_AVAILABLE = True
 except ImportError:
-    # This will be caught by the check_ffmpeg() function in main(),
+    # This will be caught by the check_dependencies() function in main(),
     # which provides a more user-friendly error message.
     pass
 
@@ -108,9 +111,11 @@ Now read the full transcript carefully and return high-quality Direct and Franke
 # 2. HELPER FUNCTIONS
 # ---
 
-def check_ffmpeg():
-    """Checks if ffmpeg is installed and accessible in the system's PATH."""
-    return shutil.which("ffmpeg") is not None
+def check_dependencies():
+    """Checks for ffmpeg and successful moviepy import."""
+    ffmpeg_ok = shutil.which("ffmpeg") is not None
+    moviepy_ok = MOVIEPY_AVAILABLE
+    return ffmpeg_ok, moviepy_ok
 
 # --- API Key & Model Fetching ---
 def get_openai_api_key() -> str:
@@ -162,15 +167,37 @@ def read_transcript_file(uploaded_file) -> str:
         return uploaded_file.read().decode("utf-8")
 
 def download_youtube_video(url: str, download_path: str) -> str:
-    """Downloads a YouTube video to a specified path."""
+    """Downloads a YouTube video to a specified path with robust options."""
+    output_template = os.path.join(download_path, 'downloaded_video.%(ext)s')
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': os.path.join(download_path, 'downloaded_video.mp4'),
+        'outtmpl': output_template,
         'quiet': True,
+        'no_warnings': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.5',
+        },
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    return os.path.join(download_path, 'downloaded_video.mp4')
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(url, download=True)
+            # The actual filename is in the info_dict
+            downloaded_file = ydl.prepare_filename(info_dict)
+            if os.path.exists(downloaded_file):
+                return downloaded_file
+            else:
+                # Fallback search in case the template name doesn't match exactly
+                for file in os.listdir(download_path):
+                    if file.startswith("downloaded_video"):
+                        return os.path.join(download_path, file)
+                raise FileNotFoundError("Downloaded video file not found.")
+    except yt_dlp.utils.DownloadError as e:
+        # Provide a user-friendly error for common issues like 403
+        if "HTTP Error 403" in str(e):
+            raise Exception("YouTube download failed (403 Forbidden). This video may be private, region-locked, or YouTube is blocking server requests. Try another video.")
+        else:
+            raise e # Re-raise other download errors
 
 def download_drive_file(drive_url: str, download_path: str) -> str:
     """Downloads a Google Drive file."""
@@ -354,26 +381,32 @@ def main():
     st.title("🤖 AI Shorts Assistant")
     st.markdown("Combines AI-driven editing plans with automated video clipping. Upload a video link and its transcript to get started.")
 
-    # --- FFMPEG Dependency Check ---
-    if not check_ffmpeg():
-        st.error("CRITICAL ERROR: `ffmpeg` is not installed or not found in your system's PATH.")
-        st.info("`ffmpeg` is a required system dependency for video processing with `moviepy`.")
-        st.markdown("""
-            ### How to Install `ffmpeg`
-            
-            **1. On Your Local Computer:**
-            - **Windows:** Download the executables from [ffmpeg.org](https://ffmpeg.org/download.html), unzip them, and add the `bin` folder to your system's PATH environment variable.
-            - **macOS (using Homebrew):** Open Terminal and run `brew install ffmpeg`.
-            - **Linux (Debian/Ubuntu):** Open Terminal and run `sudo apt update && sudo apt install ffmpeg`.
-            
-            **2. On Streamlit Cloud:**
-            - Create a file named `packages.txt` in the root of your GitHub repository.
-            - Add one line to this file: `ffmpeg`
-            - Commit and push this file. Streamlit Cloud will automatically install it for you.
-            
-            **After installing, you may need to restart your application or terminal.**
-        """)
-        return # Stop the app from executing further
+    # --- Dependency Check ---
+    ffmpeg_ok, moviepy_ok = check_dependencies()
+    if not ffmpeg_ok or not moviepy_ok:
+        st.error("CRITICAL ERROR: A required dependency is missing.")
+        if not moviepy_ok:
+            st.warning("The `moviepy` library could not be imported. This is usually caused by a problem in your environment.")
+            st.code("pip install moviepy", language="bash")
+        if not ffmpeg_ok:
+            st.warning("`ffmpeg` is not installed or not found in your system's PATH.")
+            st.markdown("""
+                `ffmpeg` is a required system dependency for video processing.
+                
+                ### How to Install `ffmpeg`
+                
+                **1. On Your Local Computer:**
+                - **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html), unzip, and add the `bin` folder to your system's PATH.
+                - **macOS (Homebrew):** `brew install ffmpeg`
+                - **Linux (Debian/Ubuntu):** `sudo apt update && sudo apt install ffmpeg`
+                
+                **2. On Streamlit Cloud:**
+                - Create a `packages.txt` file in your repository.
+                - Add one line to this file: `ffmpeg`
+                
+                **After installing, restart your application or terminal.**
+            """)
+        return # Stop the app
 
     # --- Sidebar for Inputs ---
     with st.sidebar:
