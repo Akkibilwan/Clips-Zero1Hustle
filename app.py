@@ -5,7 +5,17 @@ import os
 import re
 import tempfile
 import streamlit as st
-from moviepy.editor import VideoFileClip, concatenate_videoclips
+import shutil # Added for checking system dependencies
+
+# This import is wrapped in a try/except block to provide a cleaner error
+# if ffmpeg is missing, which is handled by a check in main().
+try:
+    from moviepy.editor import VideoFileClip, concatenate_videoclips
+except ImportError:
+    # This will be caught by the check_ffmpeg() function in main(),
+    # which provides a more user-friendly error message.
+    pass
+
 import yt_dlp
 import gdown
 from openai import OpenAI, BadRequestError as OpenAIBadRequestError
@@ -97,6 +107,10 @@ Now read the full transcript carefully and return high-quality Direct and Franke
 # ---
 # 2. HELPER FUNCTIONS
 # ---
+
+def check_ffmpeg():
+    """Checks if ffmpeg is installed and accessible in the system's PATH."""
+    return shutil.which("ffmpeg") is not None
 
 # --- API Key & Model Fetching ---
 def get_openai_api_key() -> str:
@@ -339,6 +353,27 @@ def main():
     st.set_page_config(page_title="AI Shorts Assistant", layout="wide")
     st.title("🤖 AI Shorts Assistant")
     st.markdown("Combines AI-driven editing plans with automated video clipping. Upload a video link and its transcript to get started.")
+
+    # --- FFMPEG Dependency Check ---
+    if not check_ffmpeg():
+        st.error("CRITICAL ERROR: `ffmpeg` is not installed or not found in your system's PATH.")
+        st.info("`ffmpeg` is a required system dependency for video processing with `moviepy`.")
+        st.markdown("""
+            ### How to Install `ffmpeg`
+            
+            **1. On Your Local Computer:**
+            - **Windows:** Download the executables from [ffmpeg.org](https://ffmpeg.org/download.html), unzip them, and add the `bin` folder to your system's PATH environment variable.
+            - **macOS (using Homebrew):** Open Terminal and run `brew install ffmpeg`.
+            - **Linux (Debian/Ubuntu):** Open Terminal and run `sudo apt update && sudo apt install ffmpeg`.
+            
+            **2. On Streamlit Cloud:**
+            - Create a file named `packages.txt` in the root of your GitHub repository.
+            - Add one line to this file: `ffmpeg`
+            - Commit and push this file. Streamlit Cloud will automatically install it for you.
+            
+            **After installing, you may need to restart your application or terminal.**
+        """)
+        return # Stop the app from executing further
 
     # --- Sidebar for Inputs ---
     with st.sidebar:
