@@ -196,31 +196,61 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
     return None
 
 def parse_ai_output(text: str) -> list:
+    """
+    Robustly parses the AI's markdown output into a list of structured clip data.
+    This version checks for the existence of each match object before accessing its groups
+    to prevent 'NoneType' errors.
+    """
     clips = []
+    # Split by the main header to isolate each clip's data
     sections = re.split(r'\*\*Short Title:\*\*', text)
     
-    for i, section in enumerate(sections[1:], 1):
+    for i, section in enumerate(sections[1:], 1): # Start from 1 to skip the part before the first title
         try:
-            title = re.search(r'^(.*?)(?=\*\*)', section, re.MULTILINE).group(1).strip()
-            clip_type = re.search(r'\*\*Type:\*\*\s*(.*?)(?=\*\*)', section).group(1).strip()
-            rationale = re.search(r'\*\*Rationale:\*\*(.*?)(?=\*\*|$)', section, re.DOTALL).group(1).strip()
-            script = re.search(r'\*\*Script:\*\*(.*?)\*\*Rationale:\*\*', section, re.DOTALL).group(1).strip()
+            # --- Safely extract each piece of information ---
             
-            timestamp_text = re.search(r'\*\*Timestamps:\*\*(.*?)\*\*Script:\*\*', section, re.DOTALL).group(1)
-            timestamp_matches = re.findall(r'START:\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*END:\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})', timestamp_text)
+            # Title
+            title_match = re.search(r'^(.*?)(?:\n|\*\*)', section, re.MULTILINE)
+            title = title_match.group(1).strip() if title_match else f"Untitled Clip {i}"
             
-            timestamps = []
-            for start_str, end_str in timestamp_matches:
-                start_sec = parse_srt_timestamp(start_str)
-                timestamps.append({"start_str": start_str, "end_str": end_str, "start_sec": start_sec})
+            # Type
+            type_match = re.search(r'\*\*Type:\*\*\s*(.*?)(?:\n|\*\*)', section)
+            clip_type = type_match.group(1).strip() if type_match else "Unknown"
 
+            # Rationale
+            rationale_match = re.search(r'\*\*Rationale:\*\*(.*?)(?:\n\*\*|$)', section, re.DOTALL)
+            rationale = rationale_match.group(1).strip() if rationale_match else "No rationale provided."
+
+            # Script
+            script_match = re.search(r'\*\*Script:\*\*(.*?)\*\*Rationale:\*\*', section, re.DOTALL)
+            script = script_match.group(1).strip() if script_match else "Script not found."
+
+            # Timestamps
+            timestamp_text_match = re.search(r'\*\*Timestamps:\*\*(.*?)\*\*Script:\*\*', section, re.DOTALL)
+            timestamps = []
+            if timestamp_text_match:
+                timestamp_text = timestamp_text_match.group(1)
+                timestamp_matches = re.findall(r'START:\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*END:\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})', timestamp_text)
+                for start_str, end_str in timestamp_matches:
+                    start_sec = parse_srt_timestamp(start_str)
+                    timestamps.append({"start_str": start_str, "end_str": end_str, "start_sec": start_sec})
+
+            # Only add the clip if we successfully found timestamps
             if timestamps:
                 clips.append({
-                    "title": title, "type": clip_type, "rationale": rationale,
-                    "script": script, "timestamps": timestamps
+                    "title": title,
+                    "type": clip_type,
+                    "rationale": rationale,
+                    "script": script,
+                    "timestamps": timestamps
                 })
+            else:
+                st.warning(f"Could not find valid timestamps for clip section {i}. Skipping.")
+
         except Exception as e:
-            st.warning(f"Could not parse clip section {i}: {e}")
+            # This broad exception is a fallback, but the specific checks should prevent most crashes.
+            st.warning(f"An unexpected error occurred while parsing clip section {i}: {e}")
+            
     return clips
 
 # ---
