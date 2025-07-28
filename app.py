@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import streamlit as st
+import shutil
 
 # All necessary libraries are imported here.
 # The environment setup via requirements.txt and packages.txt is critical for these to work.
@@ -166,22 +167,19 @@ def download_youtube_video(url: str, download_path: str) -> str:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
-            # The actual filename is in the info_dict
             downloaded_file = ydl.prepare_filename(info_dict)
             if os.path.exists(downloaded_file):
                 return downloaded_file
             else:
-                # Fallback search in case the template name doesn't match exactly
                 for file in os.listdir(download_path):
                     if file.startswith("downloaded_video"):
                         return os.path.join(download_path, file)
                 raise FileNotFoundError("Downloaded video file not found.")
     except yt_dlp.utils.DownloadError as e:
-        # Provide a user-friendly error for common issues like 403
         if "HTTP Error 403" in str(e):
-            raise Exception("YouTube download failed (403 Forbidden). This video may be private, region-locked, or YouTube is blocking server requests. Try another video.")
+            raise Exception("YouTube download failed (403 Forbidden). This video may be private, region-locked, or YouTube is blocking server requests. Please use the direct file upload method instead.")
         else:
-            raise e # Re-raise other download errors
+            raise e
 
 def download_drive_file(drive_url: str, download_path: str) -> str:
     """Downloads a Google Drive file."""
@@ -206,7 +204,6 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
     """Generates shorts ideas using the selected provider's API."""
     user_content = transcript + f"\n\nPlease generate {count} unique potential shorts in the specified format."
     
-    # OpenAI
     if provider_name == "OpenAI":
         api_key = get_openai_api_key()
         if not api_key:
@@ -221,14 +218,10 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
                 max_tokens=4000
             )
             return resp.choices[0].message.content
-        except OpenAIBadRequestError as e:
-            st.error(f"OpenAI API Error: {e}. The selected model might not be available.")
-            return None
         except Exception as e:
             st.error(f"An unexpected OpenAI API error occurred: {e}")
             return None
 
-    # Google
     elif provider_name == "Google":
         api_key = get_google_api_key()
         if not api_key:
@@ -244,9 +237,6 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
                 generation_config=genai.types.GenerationConfig(temperature=0.7, max_output_tokens=4000),
                 safety_settings=safety_settings
             )
-            if not resp.parts:
-                 st.error("The response was blocked by Google's safety filters. Try another model or provider.")
-                 return None
             return resp.text
         except Exception as e:
             st.error(f"An unexpected Google AI API error occurred: {e}")
@@ -256,7 +246,6 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
 def parse_ai_output(text: str) -> list:
     """Parses the AI's markdown output into a list of structured clip data."""
     clips = []
-    # Split the text by the main title header
     short_sections = re.split(r'Potential Short Title:', text)
     
     for i, section in enumerate(short_sections):
@@ -265,36 +254,25 @@ def parse_ai_output(text: str) -> list:
 
         try:
             title_match = re.search(r'^(.*)', section, re.MULTILINE)
-            duration_match = re.search(r'Estimated Duration:\s*(.*)', section, re.MULTILINE)
             type_match = re.search(r'Type:\s*(.*)', section, re.MULTILINE)
             rationale_match = re.search(r'Rationale for Virality:\s*([\s\S]*)', section, re.MULTILINE)
             
             title = title_match.group(1).strip() if title_match else f"Untitled Clip {i}"
-            duration = duration_match.group(1).strip() if duration_match else "N/A"
             clip_type = type_match.group(1).strip() if type_match else "Direct Clip"
             rationale = rationale_match.group(1).strip() if rationale_match else "No rationale provided."
 
-            # Extract timestamps from the markdown table
             table_rows = re.findall(r'\|\s*(.*?-->.*?)\s*\|', section, re.MULTILINE)
             timestamps = []
             for row in table_rows:
                 start_str, end_str = [t.strip() for t in row.split('-->')]
-                start_sec = time_to_seconds(start_str)
-                end_sec = time_to_seconds(end_str)
-                timestamps.append((start_sec, end_sec))
+                timestamps.append((time_to_seconds(start_str), time_to_seconds(end_str)))
 
-            if not timestamps:
-                continue
-
-            clips.append({
-                "title": title,
-                "duration": duration,
-                "type": clip_type,
-                "rationale": rationale,
-                "timestamps": timestamps
-            })
+            if timestamps:
+                clips.append({
+                    "title": title, "type": clip_type, "rationale": rationale, "timestamps": timestamps
+                })
         except Exception as e:
-            st.warning(f"Could not parse a clip section: {e}\nSection content: {section[:100]}...")
+            st.warning(f"Could not parse a clip section: {e}")
             
     return clips
 
@@ -312,46 +290,27 @@ def generate_clips(video_path: str, clips_data: list, output_dir: str) -> list:
         st.info(f"Processing Clip {i+1}/{len(clips_data)}: '{clip_data['title']}' ({clip_data['type']})")
         
         try:
-            subclips = []
-            for start_time, end_time in clip_data["timestamps"]:
-                # Ensure timestamps are within video duration
-                if start_time < source_video.duration and end_time <= source_video.duration:
-                    subclips.append(source_video.subclip(start_time, end_time))
-                else:
-                    st.warning(f"Timestamp ({start_time}-{end_time}) out of bounds for clip '{clip_data['title']}'. Skipping segment.")
+            subclips = [source_video.subclip(start, end) for start, end in clip_data["timestamps"] if start < source_video.duration and end <= source_video.duration]
 
             if not subclips:
                 st.error(f"No valid segments found for clip '{clip_data['title']}'. Skipping.")
                 continue
 
-            # If it's a Franken-Clip with multiple segments, concatenate them
-            if len(subclips) > 1:
-                final_clip = concatenate_videoclips(subclips)
-            else:
-                final_clip = subclips[0]
-
-            # Define output path and write file
-            output_filename = f"clip_{i+1}.mp4"
-            output_filepath = os.path.join(output_dir, output_filename)
+            final_clip = concatenate_videoclips(subclips) if len(subclips) > 1 else subclips[0]
+            output_filepath = os.path.join(output_dir, f"clip_{i+1}.mp4")
             
             final_clip.write_videofile(output_filepath, codec="libx264", audio_codec="aac", temp_audiofile=f'temp-audio_{i}.m4a', remove_temp=True)
             
             generated_clips.append({
-                "path": output_filepath,
-                "title": clip_data['title'],
-                "type": clip_data['type'],
-                "rationale": clip_data['rationale']
+                "path": output_filepath, "title": clip_data['title'], "type": clip_data['type'], "rationale": clip_data['rationale']
             })
             st.success(f"✅ Successfully generated clip: {clip_data['title']}")
 
         except Exception as e:
             st.error(f"Failed to generate clip '{clip_data['title']}': {e}")
         finally:
-            # Clean up memory
-            if 'final_clip' in locals():
-                final_clip.close()
-            for sc in subclips:
-                sc.close()
+            if 'final_clip' in locals(): final_clip.close()
+            for sc in subclips: sc.close()
 
     source_video.close()
     return generated_clips
@@ -363,80 +322,88 @@ def generate_clips(video_path: str, clips_data: list, output_dir: str) -> list:
 def main():
     st.set_page_config(page_title="AI Shorts Assistant", layout="wide")
     st.title("🤖 AI Shorts Assistant")
-    st.markdown("Combines AI-driven editing plans with automated video clipping. Upload a video link and its transcript to get started.")
+    st.markdown("Combines AI-driven editing plans with automated video clipping. Upload a video file and its transcript to get started.")
 
     # --- Sidebar for Inputs ---
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # Video Source
-        video_source_type = st.radio("Video Source", ["YouTube", "Google Drive"])
-        video_url = st.text_input("Video URL", placeholder="Enter URL here...")
+        # --- NEW: Prioritize File Upload ---
+        st.subheader("1. Upload Video")
+        st.info("🚀 This is the most reliable method.")
+        uploaded_video_file = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi", "mkv"])
+
+        with st.expander("Alternative: Download from URL (May Fail)"):
+            st.warning("YouTube downloads can be blocked. Use direct upload if possible.")
+            video_source_type = st.radio("Video Source", ["YouTube", "Google Drive"])
+            video_url = st.text_input("Video URL", placeholder="Enter URL here...")
         
-        # Transcript
+        st.subheader("2. Upload Transcript")
         uploaded_transcript = st.file_uploader("Upload Transcript", type=["srt", "txt", "docx"])
         
         st.markdown("---")
         
-        # AI Settings
+        st.subheader("3. AI Settings")
         provider = st.selectbox("Choose AI Provider", ["Google", "OpenAI"])
         
         if provider == "OpenAI":
-            available_models = fetch_openai_models(get_openai_api_key())
-            model = st.selectbox("Choose model", available_models, index=0)
+            model = st.selectbox("Choose model", fetch_openai_models(get_openai_api_key()), index=0)
         else: # Google
-            available_models = fetch_gemini_models(get_google_api_key())
-            model = st.selectbox("Choose model", available_models, index=0)
+            model = st.selectbox("Choose model", fetch_gemini_models(get_google_api_key()), index=0)
 
         result_count = st.slider("Number of Shorts to Generate", 1, 10, 5)
 
     # --- Main App Logic ---
     if st.button("🚀 Generate Video Clips", type="primary"):
-        if not video_url:
-            st.error("Please provide a video URL.")
+        # Validate inputs
+        if not uploaded_video_file and not video_url:
+            st.error("Please upload a video file or provide a URL.")
             return
         if not uploaded_transcript:
             st.error("Please upload a transcript file.")
             return
 
-        # Create a temporary directory for all files for this run
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                # 1. Download Video
-                with st.spinner(f"Downloading video from {video_source_type}... This may take a while."):
-                    if video_source_type == "YouTube":
-                        video_path = download_youtube_video(video_url, temp_dir)
-                    else: # Google Drive
-                        video_path = download_drive_file(video_url, temp_dir)
-                st.success(f"✅ Video downloaded successfully to: {video_path}")
-
-                # 2. Read Transcript
-                transcript_text = read_transcript_file(uploaded_transcript)
-                if not transcript_text:
-                    st.error("Could not read transcript file.")
+                video_path = ""
+                # --- NEW: Logic to prioritize uploaded file ---
+                if uploaded_video_file:
+                    with st.spinner("Processing uploaded video file..."):
+                        video_path = os.path.join(temp_dir, uploaded_video_file.name)
+                        with open(video_path, "wb") as f:
+                            f.write(uploaded_video_file.getbuffer())
+                        st.success("✅ Uploaded video processed.")
+                elif video_url:
+                    with st.spinner(f"Downloading video from {video_source_type}... This may take a while."):
+                        if video_source_type == "YouTube":
+                            video_path = download_youtube_video(video_url, temp_dir)
+                        else: # Google Drive
+                            video_path = download_drive_file(video_url, temp_dir)
+                    st.success(f"✅ Video downloaded successfully.")
+                
+                if not video_path or not os.path.exists(video_path):
+                    st.error("Failed to obtain video file. Please check the source.")
                     return
 
-                # 3. Analyze with AI
+                # Continue with the rest of the process
+                transcript_text = read_transcript_file(uploaded_transcript)
+                if not transcript_text: return
+
                 with st.spinner(f"Analyzing transcript with {provider}'s {model}..."):
                     ai_response = analyze_transcript_with_llm(transcript_text, result_count, model, provider)
-                if not ai_response:
-                    st.error("AI analysis failed. Please check the logs above.")
-                    return
+                if not ai_response: return
                 st.success("✅ AI analysis complete.")
                 with st.expander("View Raw AI Output"):
                     st.text_area("", ai_response, height=300)
 
-                # 4. Parse AI Output
                 clips_to_generate = parse_ai_output(ai_response)
                 if not clips_to_generate:
                     st.error("Could not parse any valid clips from the AI response.")
                     return
-                st.success(f"✅ Parsed {len(clips_to_generate)} clip plans from AI response.")
+                st.success(f"✅ Parsed {len(clips_to_generate)} clip plans.")
 
-                # 5. Generate Clips
                 final_clips = generate_clips(video_path, clips_to_generate, temp_dir)
 
-                # 6. Display Results
                 if final_clips:
                     st.markdown("---")
                     st.header("🎬 Your Generated Clips")
@@ -448,13 +415,10 @@ def main():
                                 st.video(clip['path'])
                                 with open(clip['path'], "rb") as file:
                                     st.download_button(
-                                        label="⬇️ Download Clip",
-                                        data=file,
-                                        file_name=f"{clip['title'].replace(' ', '_')}.mp4",
+                                        label="⬇️ Download Clip", data=file,
+                                        file_name=f"{re.sub('[^A-Za-z0-9]+', '_', clip['title'])}.mp4",
                                         mime="video/mp4"
                                     )
-                            else:
-                                st.error("Clip file not found.")
                         with col2:
                             st.markdown(f"**Type:** `{clip['type']}`")
                             st.markdown("**Rationale for Virality:**")
@@ -463,7 +427,7 @@ def main():
                     st.warning("No clips were successfully generated.")
 
             except Exception as e:
-                st.error(f"An unexpected error occurred during the process: {e}")
+                st.error(f"An unexpected error occurred: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
