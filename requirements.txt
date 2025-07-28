@@ -1,0 +1,7 @@
+streamlit
+openai
+google-generativeai
+moviepy
+yt-dlp
+gdown
+python-docx
