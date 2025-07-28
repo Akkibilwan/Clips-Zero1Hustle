@@ -1,7 +1,8 @@
 streamlit
 openai
 google-generativeai
-moviepy
-yt-dlp
 gdown
 python-docx
+yt-dlp
+moviepy==1.0.3
+imageio-ffmpeg==0.4.9
