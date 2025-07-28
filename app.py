@@ -166,67 +166,109 @@ def extract_drive_id(url: str) -> str:
     return url  # Return as-is if no pattern matches
 
 def download_youtube_video(url: str, download_path: str) -> str:
-    """Downloads a YouTube video with enhanced anti-blocking measures."""
+    """Downloads a YouTube video with multiple fallback strategies."""
     output_template = os.path.join(download_path, 'downloaded_video.%(ext)s')
     
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+    # Strategy 1: Modern yt-dlp with multiple client fallbacks
+    strategies = [
+        # Strategy 1: Modern approach with multiple clients
+        {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': output_template,
+            'quiet': False,  # Show more info for debugging
+            'no_warnings': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web', 'ios', 'mweb'],
+                    'skip': ['hls'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
         },
-        'socket_timeout': 30,
-        'retries': 3,
-        'fragment_retries': 3,
-        'skip_unavailable_fragments': True,
-        'extractor_args': {
-            'youtube': {
-                'skip': ['hls', 'dash'],
-                'player_client': ['android', 'web'],
-            }
+        # Strategy 2: Simple approach
+        {
+            'format': 'worst[ext=mp4]/worst',  # Try lower quality
+            'outtmpl': output_template,
+            'quiet': False,
+            'extract_flat': False,
         },
-    }
+        # Strategy 3: Audio + Video separate (last resort)
+        {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]',
+            'outtmpl': output_template,
+            'quiet': False,
+            'merge_output_format': 'mp4',
+        }
+    ]
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Extract info first to test accessibility
-            info_dict = ydl.extract_info(url, download=False)
-            if not info_dict:
-                raise Exception("Could not extract video information")
+    last_error = None
+    
+    for i, ydl_opts in enumerate(strategies, 1):
+        try:
+            st.info(f"Trying download strategy {i}/3...")
             
-            # Download the video
-            info_dict = ydl.extract_info(url, download=True)
-            downloaded_file = ydl.prepare_filename(info_dict)
-            
-            if os.path.exists(downloaded_file):
-                return downloaded_file
-            else:
-                # Fallback search
-                for file in os.listdir(download_path):
-                    if file.startswith("downloaded_video"):
-                        return os.path.join(download_path, file)
-                raise FileNotFoundError("Downloaded video file not found.")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Test extraction first
+                try:
+                    info_dict = ydl.extract_info(url, download=False)
+                    if not info_dict:
+                        raise Exception("Could not extract video information")
+                    
+                    st.success(f"✅ Video info extracted successfully with strategy {i}")
+                    st.info(f"Video title: {info_dict.get('title', 'Unknown')}")
+                    st.info(f"Duration: {info_dict.get('duration', 'Unknown')} seconds")
+                    
+                except Exception as extract_error:
+                    st.warning(f"Strategy {i} - Info extraction failed: {extract_error}")
+                    continue
                 
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e).lower()
-        if "403" in error_msg or "forbidden" in error_msg:
-            raise Exception("YouTube download failed (403 Forbidden). This video may be private, region-locked, or YouTube is blocking server requests. Try using Google Drive instead.")
-        elif "unavailable" in error_msg:
-            raise Exception("This YouTube video is unavailable. It may be private, deleted, or region-locked.")
-        elif "copyright" in error_msg:
-            raise Exception("This video cannot be downloaded due to copyright restrictions.")
-        else:
-            raise Exception(f"YouTube download failed: {str(e)}")
-    except Exception as e:
-        raise Exception(f"Unexpected error during YouTube download: {str(e)}")
+                # Now download
+                info_dict = ydl.extract_info(url, download=True)
+                downloaded_file = ydl.prepare_filename(info_dict)
+                
+                # Check if file exists
+                if os.path.exists(downloaded_file) and os.path.getsize(downloaded_file) > 0:
+                    return downloaded_file
+                else:
+                    # Fallback search for any downloaded file
+                    for file in os.listdir(download_path):
+                        if file.startswith("downloaded_video") and os.path.getsize(os.path.join(download_path, file)) > 0:
+                            return os.path.join(download_path, file)
+                    
+                    raise FileNotFoundError("Downloaded file not found or is empty")
+                    
+        except Exception as e:
+            last_error = e
+            st.warning(f"Strategy {i} failed: {str(e)}")
+            continue
+    
+    # If all strategies failed
+    error_msg = str(last_error) if last_error else "Unknown error"
+    
+    if "player response" in error_msg.lower():
+        raise Exception(
+            "YouTube download failed - Could not extract video player information. "
+            "This usually means:\n"
+            "• The video may be private or restricted\n" 
+            "• YouTube has updated their system\n"
+            "• The video URL might be invalid\n\n"
+            "Try using Google Drive instead, or ensure the YouTube video is public and accessible."
+        )
+    elif "403" in error_msg or "forbidden" in error_msg:
+        raise Exception(
+            "YouTube download failed (403 Forbidden). Possible causes:\n"
+            "• Video is private or region-locked\n"
+            "• YouTube is blocking automated downloads\n"
+            "• Video has copyright restrictions\n\n"
+            "Please use Google Drive as an alternative."
+        )
+    elif "unavailable" in error_msg.lower():
+        raise Exception("This YouTube video is unavailable, private, or has been deleted.")
+    else:
+        raise Exception(f"All YouTube download strategies failed. Last error: {error_msg}\n\nPlease try using Google Drive instead.")
 
 def download_drive_file(drive_url: str, download_path: str) -> str:
     """Downloads a Google Drive file with improved error handling."""
@@ -507,12 +549,22 @@ def main():
         
         # Video Source
         st.subheader("📹 Video Source")
-        video_source = st.radio("Choose video source:", ["YouTube URL", "Google Drive Link"])
-        video_url = st.text_input(
-            "Video URL", 
-            placeholder="Paste your YouTube or Google Drive URL here...",
-            help="For Google Drive: Make sure the file is publicly accessible"
-        )
+        video_source = st.radio("Choose video source:", ["Local Upload", "YouTube URL", "Google Drive Link"])
+        
+        if video_source == "Local Upload":
+            uploaded_video = st.file_uploader(
+                "Upload Video File", 
+                type=["mp4", "mov", "avi", "mkv", "webm"],
+                help="Upload your video file directly (recommended for reliability)"
+            )
+            video_url = None
+        else:
+            uploaded_video = None
+            video_url = st.text_input(
+                "Video URL", 
+                placeholder="Paste your YouTube or Google Drive URL here...",
+                help="For Google Drive: Make sure the file is publicly accessible"
+            )
         
         # Transcript Upload
         st.subheader("📄 Transcript")
@@ -549,9 +601,14 @@ def main():
     with col1:
         if st.button("🚀 Generate Video Clips", type="primary", use_container_width=True):
             # Validation
-            if not video_url:
-                st.error("❌ Please provide a video URL")
-                return
+            if video_source == "Local Upload":
+                if not uploaded_video:
+                    st.error("❌ Please upload a video file")
+                    return
+            else:
+                if not video_url:
+                    st.error("❌ Please provide a video URL")
+                    return
             
             if not uploaded_transcript:
                 st.error("❌ Please upload a transcript file")
@@ -574,14 +631,21 @@ def main():
                         srt_timestamps = extract_timestamps_from_srt(transcript_content)
                         st.info(f"Found {len(srt_timestamps)} timestamp ranges in transcript")
                     
-                    # Step 3: Download Video
-                    with st.spinner(f"⬇️ Downloading video from {video_source}..."):
-                        if video_source == "YouTube URL":
-                            video_path = download_youtube_video(video_url, temp_dir)
-                        else:
-                            video_path = download_drive_file(video_url, temp_dir)
-                    
-                    st.success("✅ Video downloaded successfully")
+                    # Step 3: Get Video Path
+                    if video_source == "Local Upload":
+                        # Save uploaded video to temp directory
+                        video_path = os.path.join(temp_dir, uploaded_video.name)
+                        with open(video_path, "wb") as f:
+                            f.write(uploaded_video.getvalue())
+                        st.success("✅ Video uploaded successfully")
+                    else:
+                        # Download video from URL
+                        with st.spinner(f"⬇️ Downloading video from {video_source}..."):
+                            if video_source == "YouTube URL":
+                                video_path = download_youtube_video(video_url, temp_dir)
+                            else:  # Google Drive Link
+                                video_path = download_drive_file(video_url, temp_dir)
+                        st.success("✅ Video downloaded successfully")
                     
                     # Step 4: AI Analysis
                     with st.spinner(f"🧠 Analyzing transcript with {provider} {model}..."):
@@ -672,7 +736,8 @@ def main():
         st.markdown("### 🎯 Supported formats:")
         st.markdown("""
         **Video Sources:**
-        - YouTube URLs
+        - Local upload (.mp4, .mov, .avi, .mkv)
+        - YouTube URLs  
         - Google Drive links
         
         **Transcript Formats:**
