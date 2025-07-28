@@ -5,20 +5,10 @@ import os
 import re
 import tempfile
 import streamlit as st
-import shutil # Added for checking system dependencies
-import sys # To check module import status
 
-# This import is wrapped in a try/except block to provide a cleaner error
-# if ffmpeg is missing, which is handled by a check in main().
-MOVIEPY_AVAILABLE = False
-try:
-    from moviepy.editor import VideoFileClip, concatenate_videoclips
-    MOVIEPY_AVAILABLE = True
-except ImportError:
-    # This will be caught by the check_dependencies() function in main(),
-    # which provides a more user-friendly error message.
-    pass
-
+# All necessary libraries are imported here.
+# The environment setup via requirements.txt and packages.txt is critical for these to work.
+from moviepy.editor import VideoFileClip, concatenate_videoclips
 import yt_dlp
 import gdown
 from openai import OpenAI, BadRequestError as OpenAIBadRequestError
@@ -110,12 +100,6 @@ Now read the full transcript carefully and return high-quality Direct and Franke
 # ---
 # 2. HELPER FUNCTIONS
 # ---
-
-def check_dependencies():
-    """Checks for ffmpeg and successful moviepy import."""
-    ffmpeg_ok = shutil.which("ffmpeg") is not None
-    moviepy_ok = MOVIEPY_AVAILABLE
-    return ffmpeg_ok, moviepy_ok
 
 # --- API Key & Model Fetching ---
 def get_openai_api_key() -> str:
@@ -380,33 +364,6 @@ def main():
     st.set_page_config(page_title="AI Shorts Assistant", layout="wide")
     st.title("🤖 AI Shorts Assistant")
     st.markdown("Combines AI-driven editing plans with automated video clipping. Upload a video link and its transcript to get started.")
-
-    # --- Dependency Check ---
-    ffmpeg_ok, moviepy_ok = check_dependencies()
-    if not ffmpeg_ok or not moviepy_ok:
-        st.error("CRITICAL ERROR: A required dependency is missing.")
-        if not moviepy_ok:
-            st.warning("The `moviepy` library could not be imported. This is usually caused by a problem in your environment.")
-            st.code("pip install moviepy", language="bash")
-        if not ffmpeg_ok:
-            st.warning("`ffmpeg` is not installed or not found in your system's PATH.")
-            st.markdown("""
-                `ffmpeg` is a required system dependency for video processing.
-                
-                ### How to Install `ffmpeg`
-                
-                **1. On Your Local Computer:**
-                - **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html), unzip, and add the `bin` folder to your system's PATH.
-                - **macOS (Homebrew):** `brew install ffmpeg`
-                - **Linux (Debian/Ubuntu):** `sudo apt update && sudo apt install ffmpeg`
-                
-                **2. On Streamlit Cloud:**
-                - Create a `packages.txt` file in your repository.
-                - Add one line to this file: `ffmpeg`
-                
-                **After installing, restart your application or terminal.**
-            """)
-        return # Stop the app
 
     # --- Sidebar for Inputs ---
     with st.sidebar:
