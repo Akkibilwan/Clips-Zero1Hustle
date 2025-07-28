@@ -199,6 +199,7 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
     return None
 
 def parse_ai_output(text: str) -> list:
+    """Robustly parses the AI's markdown output into a list of structured clip data."""
     clips = []
     sections = re.split(r'\*\*Short Title:\*\*', text)
     
@@ -213,10 +214,10 @@ def parse_ai_output(text: str) -> list:
             rationale_match = re.search(r'\*\*Rationale:\*\*(.*?)(?:\n\*\*|$)', section, re.DOTALL)
             rationale = rationale_match.group(1).strip() if rationale_match else "No rationale provided."
 
-            script_match = re.search(r'\*\*Script:\*\*(.*?)\*\*Rationale:\*\*', section, re.DOTALL)
+            script_match = re.search(r'\*\*Script:\*\*(.*?)(?=\*\*Rationale:\*\*)', section, re.DOTALL)
             script = script_match.group(1).strip() if script_match else "Script not found."
 
-            timestamp_text_match = re.search(r'\*\*Timestamps:\*\*(.*?)\*\*Script:\*\*', section, re.DOTALL)
+            timestamp_text_match = re.search(r'\*\*Timestamps:\*\*(.*?)(?=\*\*Script:\*\*)', section, re.DOTALL)
             timestamps = []
             if timestamp_text_match:
                 timestamp_text = timestamp_text_match.group(1)
@@ -236,14 +237,26 @@ def parse_ai_output(text: str) -> list:
     return clips
 
 def download_drive_file(drive_url: str, download_path: str) -> str:
-    """Downloads a Google Drive file."""
+    """Downloads a Google Drive file and verifies its integrity."""
     try:
         output_path = os.path.join(download_path, 'downloaded_video.mp4')
         gdown.download(drive_url, output_path, quiet=False, fuzzy=True)
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+
+        # --- Verification Step ---
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+            raise Exception("Downloaded file is missing or empty.")
+
+        # Try to read the duration immediately to verify the 'moov atom'
+        try:
+            with VideoFileClip(output_path) as clip:
+                duration = clip.duration
+            if duration is None or duration <= 0:
+                raise Exception("Video file is corrupted (duration is zero or None).")
+            st.info(f"Verified downloaded file. Duration: {duration:.2f} seconds.")
             return output_path
-        else:
-            raise Exception("Downloaded file is empty or does not exist.")
+        except Exception as e:
+            raise Exception(f"Downloaded file appears to be corrupted and cannot be read by MoviePy. Error: {e}. This often happens with incomplete downloads. Please check the Google Drive sharing settings and try again.")
+
     except Exception as e:
         raise Exception(f"Google Drive download failed: {e}. Ensure the link is public and correct.")
 
@@ -284,7 +297,8 @@ def generate_clips(video_path: str, clips_data: list, output_dir: str) -> list:
             st.error(f"Failed to generate clip '{clip_data['title']}': {e}")
         finally:
             if 'final_clip' in locals(): final_clip.close()
-            for sc in subclips: sc.close()
+            if 'subclips' in locals():
+                for sc in subclips: sc.close()
 
     source_video.close()
     return generated_clips
@@ -360,13 +374,14 @@ def main():
             st.session_state.results = {"type": "finder", "data": clips_data}
             st.session_state.video_url_to_play = video_url
             st.session_state.video_start_time = 0
+            st.rerun() # Rerun to display results immediately
         
         elif video_source == "Google Drive":
             with tempfile.TemporaryDirectory() as temp_dir:
                 try:
                     with st.spinner("⬇️ Downloading video from Google Drive..."):
                         video_path = download_drive_file(video_url, temp_dir)
-                    st.success("✅ Video downloaded.")
+                    st.success("✅ Video downloaded and verified.")
 
                     with st.spinner("🎬 Generating and stitching video clips... This may take a while."):
                         generated_clips = generate_clips(video_path, clips_data, temp_dir)
@@ -377,6 +392,10 @@ def main():
                         persistent_dir = "generated_clips"
                         if not os.path.exists(persistent_dir):
                             os.makedirs(persistent_dir)
+                        # Clear old clips from persistent dir
+                        for f in os.listdir(persistent_dir):
+                            os.remove(os.path.join(persistent_dir, f))
+                        
                         for clip in generated_clips:
                             new_path = os.path.join(persistent_dir, os.path.basename(clip['path']))
                             os.rename(clip['path'], new_path)
@@ -384,6 +403,7 @@ def main():
                             final_clip_paths.append(clip)
                     
                     st.session_state.results = {"type": "generator", "data": final_clip_paths}
+                    st.rerun() # Rerun to display results immediately
 
                 except Exception as e:
                     st.error(f"An error occurred during the clip generation process: {e}")
