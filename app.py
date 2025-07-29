@@ -1,6 +1,6 @@
 # app.py - AI Shorts Assistant - Combined Finder & Generator
 # This version intelligently switches between "Clip Finder" (for YouTube)
-# and "Clip Generator" (for Google Drive) with real-time clip loading.
+# and "Clip Generator" (for Google Drive) with real-time clip loading and full details.
 
 import os
 import re
@@ -261,6 +261,7 @@ def download_drive_file(drive_url: str, download_path: str) -> str:
 def generate_clips_progressively(video_path: str, clips_data: list, output_dir: str):
     """
     Generator function that cuts, stitches, and YIELDS video clips one by one.
+    It now yields the full clip data for display purposes.
     """
     source_video = VideoFileClip(video_path)
     video_duration = source_video.duration
@@ -287,9 +288,14 @@ def generate_clips_progressively(video_path: str, clips_data: list, output_dir: 
             
             final_clip.write_videofile(output_filepath, codec="libx264", audio_codec="aac", temp_audiofile=f'temp-audio_{i}.m4a', remove_temp=True, logger=None)
             
-            # YIELD the completed clip's data
+            # Yield the full original clip data along with the new path
             yield {
-                "path": output_filepath, "title": clip_data['title'], "type": clip_data['type'], "rationale": clip_data['rationale']
+                "path": output_filepath,
+                "title": clip_data['title'],
+                "type": clip_data['type'],
+                "rationale": clip_data['rationale'],
+                "script": clip_data['script'],
+                "timestamps": clip_data['timestamps']
             }
             st.success(f"✅ Generated clip: {clip_data['title']}")
 
@@ -393,7 +399,7 @@ def main():
                     for f in os.listdir(persistent_dir):
                         os.remove(os.path.join(persistent_dir, f))
                     
-                    # --- NEW: Progressive Loading Loop ---
+                    # --- Progressive Loading Loop ---
                     final_clips = []
                     clip_generator = generate_clips_progressively(video_path, clips_data, temp_dir)
                     for clip in clip_generator:
@@ -412,7 +418,13 @@ def main():
                                 st.download_button("⬇️ Download Clip", file, file_name=os.path.basename(clip['path']), key=f"dl_{new_path}")
                         with col_info:
                             st.markdown(f"**Type:** `{clip['type']}`")
-                            st.info(clip['rationale'])
+                            with st.expander("💡 Rationale"):
+                                st.info(clip['rationale'])
+                            with st.expander("📜 Script"):
+                                st.text_area("", clip['script'], height=100, key=f"script_{new_path}")
+                            with st.expander("⏰ Timestamps Used"):
+                                for ts in clip['timestamps']:
+                                    st.code(f"{ts['start_str']} --> {ts['end_str']}")
                         st.markdown("---")
 
                     st.session_state.results["data"] = final_clips # Save final list
@@ -439,7 +451,9 @@ def main():
                     st.markdown(f"**Type:** `{clip['type']}`")
                     st.markdown("**Timestamps (click to play):**")
                     for j, ts in enumerate(clip['timestamps']):
-                        if st.button(f"▶️ Play Segment {j+1} ({ts['start_str']})", key=f"play_{i}_{j}"):
+                        # Display the full timestamp range and the play button
+                        st.markdown(f"**Segment {j+1}:** `{ts['start_str']} --> {ts['end_str']}`")
+                        if st.button(f"▶️ Play Segment {j+1}", key=f"play_{i}_{j}"):
                             st.session_state.video_start_time = int(ts['start_sec'])
                             st.rerun()
                 with col_script:
@@ -462,7 +476,13 @@ def main():
                         st.error("Clip file not found.")
                 with col_info:
                      st.markdown(f"**Type:** `{clip['type']}`")
-                     st.info(clip['rationale'])
+                     with st.expander("💡 Rationale"):
+                         st.info(clip['rationale'])
+                     with st.expander("📜 Script"):
+                         st.text_area("", clip['script'], height=100, key=f"script_{clip['path']}")
+                     with st.expander("⏰ Timestamps Used"):
+                         for ts in clip['timestamps']:
+                             st.code(f"{ts['start_str']} --> {ts['end_str']}")
                 st.markdown("---")
 
 if __name__ == "__main__":
