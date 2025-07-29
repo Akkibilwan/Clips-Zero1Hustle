@@ -186,7 +186,14 @@ def analyze_transcript_with_llm(transcript: str, count: int, model_name: str, pr
         try:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(model_name)
-            safety_settings = {category: HarmBlockThreshold.BLOCK_NONE for category in HarmCategory}
+            # --- THE FIX IS HERE ---
+            # Explicitly define the safety settings with known valid categories
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            }
             full_prompt = f"{SYSTEM_PROMPT}\n\n{user_content}"
             resp = model.generate_content(
                 full_prompt,
